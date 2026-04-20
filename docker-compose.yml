@@ -1,0 +1,96 @@
+version: '3.9'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: vulnslayer-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: vulnslayer-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull granite3.3:8b"]
+    restart: "no"
+
+  mcp-cve-intelligence:
+    image: node:20-alpine
+    container_name: vulnslayer-mcp-cve
+    working_dir: /app
+    command: npx mcp-cve-intelligence-server-lite
+    environment:
+      - NODE_ENV=production
+
+  mcp-github-extras:
+    image: node:20-alpine
+    container_name: vulnslayer-mcp-github-extras
+    working_dir: /app
+    command: npx mcp-github-extras
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+
+  mcp-github:
+    image: node:20-alpine
+    container_name: vulnslayer-mcp-github
+    working_dir: /app
+    command: npx @modelcontextprotocol/server-github
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}
+
+  # Only started when TRACKER=jira
+  mcp-atlassian:
+    image: node:20-alpine
+    container_name: vulnslayer-mcp-atlassian
+    working_dir: /app
+    command: npx mcp-atlassian
+    environment:
+      - JIRA_URL=${JIRA_HOST:-}
+      - JIRA_USERNAME=${JIRA_USERNAME:-}
+      - JIRA_API_TOKEN=${JIRA_TOKEN:-}
+    profiles:
+      - jira
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vulnslayer-agent
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+      mcp-cve-intelligence:
+        condition: service_started
+      mcp-github-extras:
+        condition: service_started
+      mcp-github:
+        condition: service_started
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - TRACKER=${TRACKER:-github}
+      - JIRA_HOST=${JIRA_HOST:-}
+      - JIRA_USERNAME=${JIRA_USERNAME:-}
+      - JIRA_TOKEN=${JIRA_TOKEN:-}
+      - JIRA_PROJECT=${JIRA_PROJECT:-}
+      - MCP_CVE_HOST=http://mcp-cve-intelligence:3000
+      - MCP_GITHUB_EXTRAS_HOST=http://mcp-github-extras:3001
+      - MCP_GITHUB_HOST=http://mcp-github:3002
+      - MCP_ATLASSIAN_HOST=http://mcp-atlassian:3003
+    restart: unless-stopped
+
+volumes:
+  ollama-data:
